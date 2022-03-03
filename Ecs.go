@@ -4,34 +4,47 @@ import (
 	"fmt"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+	"github.com/flosch/pongo2/v5"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"strconv"
 	"strings"
 )
 
-type AccessAliYun struct {
-	AccessKeyId     string `yaml:"accessKeyId"`
-	AccessKeySecret string `yaml:"accessKeySecret"`
-	Region          string `yaml:"region"`
+func (srcAc *AccessAliYun) Init()  {
+	client, _ := ecs.NewClientWithAccessKey(srcAc.Region, srcAc.AccessKeyId, srcAc.AccessKeySecret)
+	srcAc.Client = *client
 }
-type AnsibleInventoryAll struct {
-	Hosts    []string            `yaml:"hosts,omitempty"`
-	Vars     AnsibleVars         `yaml:"vars,omitempty"`
-	Children map[string]Children `yaml:"children"`
+
+func (srcAc *AccessAliYun)  DescSecurityGroup() {
+    response, err:=srcAc.Client.DescribeSecurityGroups(ecs.CreateDescribeSecurityGroupsRequest())
+    CheckErr(err)
+    for _,i:=range response.SecurityGroups.SecurityGroup {
+    	fmt.Println(i.SecurityGroupId, i.Description)
+    	request := ecs.CreateDescribeSecurityGroupAttributeRequest()
+    	request.SecurityGroupId = i.SecurityGroupId
+    	res, err:=srcAc.Client.DescribeSecurityGroupAttribute(request)
+    	CheckErr(err)
+    	for _,rule:=range res.Permissions.Permission {
+			fmt.Println(rule)
+		}
+	}
+
 }
-type Children struct {
-	Hosts map[string]string `yaml:"hosts"`
-	Vars  AnsibleVars       `yaml:"vars"`
-}
-type AnsibleInventory struct {
-	All AnsibleInventoryAll `yaml:"all"`
-}
-type AnsibleVars struct {
-	AnsibleSSHHost           string `yaml:"ansible_ssh_host,omitempty"`
-	AnsibleSSHPass           string `yaml:"ansible_ssh_pass,omitempty"`
-	AnsibleSSHUser           string `yaml:"ansible_ssh_user"`
-	AnsibleSSHPrivateKeyFile string `yaml:"ansible_ssh_private_key_file"`
+func (srcAc *AccessAliYun) ModifySecurityGroup(secureId string, rules []ProcessAttr) {
+	for _,p:=range rules {
+		requestsAli :=ecs.ModifySecurityGroupEgressRuleRequest{}
+		requestsAli.RegionId = srcAc.Region
+		requestsAli.SourceCidrIp = "0.0.0.0/0"
+		requestsAli.SecurityGroupId = secureId
+		requestsAli.PortRange = fmt.Sprintf("%s/%s", p.Port, p.Port)
+		requestsAli.IpProtocol = p.Protocol
+		requestsAli.Description = p.Name
+		requestsAli.Policy = "accept"
+		res,err:=srcAc.Client.ModifySecurityGroupEgressRule(&requestsAli)
+		CheckErr(err)
+		fmt.Println(res)
+	}
 }
 
 func ListInstance(ac AccessAliYun, instance ecs.Region, inputChan chan map[string]ecs.InstancesInDescribeInstances) {
@@ -94,17 +107,21 @@ func (srcAc *AccessAliYun) LstM(result map[string]ecs.InstancesInDescribeInstanc
 				if i.OSType == "linux" {
 					if len(keyMap) > 0 {
 						fmt.Println(
-							i.Tags.Tag[0].TagValue,
-							i.Tags.Tag[0].TagKey,
+							i.Tags.Tag,
+							//i.Tags.Tag[0].TagValue,
+							//i.Tags.Tag[0].TagKey,
 							i.VpcAttributes.PrivateIpAddress.IpAddress[0],
 							i.InstanceName,
+							i.SecurityGroupIds.SecurityGroupId,
 							keyMap[i.KeyPairName])
 					} else {
 						fmt.Println(
-							i.Tags.Tag[0].TagValue,
-							i.Tags.Tag[0].TagKey,
+							i.Tags.Tag,
+							//i.Tags.Tag[0].TagValue,
+							//i.Tags.Tag[0].TagKey,
 							i.VpcAttributes.PrivateIpAddress.IpAddress[0],
 							i.InstanceName,
+							i.SecurityGroupIds.SecurityGroupId,
 							i.KeyPairName)
 					}
 
@@ -154,7 +171,7 @@ func (srcAc *AccessAliYun) GenerateAnsibleInventory(result map[string]ecs.Instan
 		}
 	}
 	b := PrintInventoryYaml(a)
-	err := ioutil.WriteFile("/w/h", b, 0777)
+	err := ioutil.WriteFile("inventory.ini", b, 0777)
 	CheckErr(err)
 }
 func PrintInventoryYaml(f AnsibleInventory) []byte {
@@ -163,4 +180,40 @@ func PrintInventoryYaml(f AnsibleInventory) []byte {
 		fmt.Println(err)
 	}
 	return b
+}
+
+func (srcAc *AccessAliYun) GenerateSecureCRTSession(result map[string]ecs.InstancesInDescribeInstances, filePath AttrSessionSecureCRT, keyMap map[string]string) error {
+	for _, v := range result {
+		for _, i := range v.Instance {
+			if i.OSType == "linux" {
+				configTpl, err := pongo2.FromBytes(AliReadFile(filePath.Tpl1))
+				CheckErr(err)
+				sessionConfig, err := configTpl.Execute(pongo2.Context{"name": map[string]interface{}{
+					"host":     i.VpcAttributes.PrivateIpAddress.IpAddress[0],
+					"pem":      keyMap[i.KeyPairName],
+					"username": "root",
+				}})
+				CheckErr(err)
+				err = ioutil.WriteFile(fmt.Sprintf("%s/%s%s", filePath.ConfigPath, i.InstanceName, ".ini"), []byte(sessionConfig), 0644)
+				CheckErr(err)
+				personalTpl, err := pongo2.FromBytes(AliReadFile(filePath.Tpl2))
+				CheckErr(err)
+				personalConfig, err := personalTpl.Execute(pongo2.Context{"name": map[string]interface{}{
+					"host":     i.VpcAttributes.PrivateIpAddress.IpAddress[0],
+					"pem":      keyMap[i.KeyPairName],
+					"username": "root",
+				}})
+				err = ioutil.WriteFile(fmt.Sprintf("%s/%s%s", filePath.PersonalPath, i.InstanceName, ".ini"), []byte(personalConfig), 0644)
+				CheckErr(err)
+			}
+		}
+	}
+	return nil
+}
+func AliReadFile(filePath string) []byte {
+	content, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		fmt.Println("Read error")
+	}
+	return content
 }
