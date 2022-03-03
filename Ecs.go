@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/slb"
 	"github.com/flosch/pongo2/v5"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -30,6 +31,15 @@ func (srcAc *AccessAliYun)  DescSecurityGroup() {
 		}
 	}
 
+}
+func (srcAc *AccessAliYun) DescLoadBalancer() {
+	client, err:= slb.NewClientWithAccessKey(srcAc.Region, srcAc.AccessKeyId, srcAc.AccessKeySecret)
+	CheckErr(err)
+	req:=slb.CreateDescribeLoadBalancerAttributeRequest()
+	res , err:= client.DescribeLoadBalancerAttribute(req)
+	for _, slb:=range res.LoadBalancerName{
+		fmt.Println(slb)
+	}
 }
 func (srcAc *AccessAliYun) ModifySecurityGroup(secureId string, rules []ProcessAttr) {
 	for _,p:=range rules {
