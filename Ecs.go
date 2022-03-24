@@ -8,42 +8,43 @@ import (
 	"github.com/flosch/pongo2/v5"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-func (srcAc *AccessAliYun) Init()  {
+func (srcAc *AccessAliYun) Init() {
 	client, _ := ecs.NewClientWithAccessKey(srcAc.Region, srcAc.AccessKeyId, srcAc.AccessKeySecret)
 	srcAc.Client = *client
 }
 
-func (srcAc *AccessAliYun)  DescSecurityGroup() {
-    response, err:=srcAc.Client.DescribeSecurityGroups(ecs.CreateDescribeSecurityGroupsRequest())
-    CheckErr(err)
-    for _,i:=range response.SecurityGroups.SecurityGroup {
-    	fmt.Println(i.SecurityGroupId, i.Description)
-    	request := ecs.CreateDescribeSecurityGroupAttributeRequest()
-    	request.SecurityGroupId = i.SecurityGroupId
-    	res, err:=srcAc.Client.DescribeSecurityGroupAttribute(request)
-    	CheckErr(err)
-    	for _,rule:=range res.Permissions.Permission {
+func (srcAc *AccessAliYun) DescSecurityGroup() {
+	response, err := srcAc.Client.DescribeSecurityGroups(ecs.CreateDescribeSecurityGroupsRequest())
+	CheckErr(err)
+	for _, i := range response.SecurityGroups.SecurityGroup {
+		fmt.Println(i.SecurityGroupId, i.Description)
+		request := ecs.CreateDescribeSecurityGroupAttributeRequest()
+		request.SecurityGroupId = i.SecurityGroupId
+		res, err := srcAc.Client.DescribeSecurityGroupAttribute(request)
+		CheckErr(err)
+		for _, rule := range res.Permissions.Permission {
 			fmt.Println(rule)
 		}
 	}
 
 }
 func (srcAc *AccessAliYun) DescLoadBalancer() {
-	client, err:= slb.NewClientWithAccessKey(srcAc.Region, srcAc.AccessKeyId, srcAc.AccessKeySecret)
+	client, err := slb.NewClientWithAccessKey(srcAc.Region, srcAc.AccessKeyId, srcAc.AccessKeySecret)
 	CheckErr(err)
-	req:=slb.CreateDescribeLoadBalancerAttributeRequest()
-	res , err:= client.DescribeLoadBalancerAttribute(req)
-	for _, slb:=range res.LoadBalancerName{
+	req := slb.CreateDescribeLoadBalancerAttributeRequest()
+	res, err := client.DescribeLoadBalancerAttribute(req)
+	for _, slb := range res.LoadBalancerName {
 		fmt.Println(slb)
 	}
 }
 func (srcAc *AccessAliYun) ModifySecurityGroup(secureId string, rules []ProcessAttr) {
-	for _,p:=range rules {
-		requestsAli :=ecs.ModifySecurityGroupEgressRuleRequest{}
+	for _, p := range rules {
+		requestsAli := ecs.ModifySecurityGroupEgressRuleRequest{}
 		requestsAli.RegionId = srcAc.Region
 		requestsAli.SourceCidrIp = "0.0.0.0/0"
 		requestsAli.SecurityGroupId = secureId
@@ -51,7 +52,7 @@ func (srcAc *AccessAliYun) ModifySecurityGroup(secureId string, rules []ProcessA
 		requestsAli.IpProtocol = p.Protocol
 		requestsAli.Description = p.Name
 		requestsAli.Policy = "accept"
-		res,err:=srcAc.Client.ModifySecurityGroupEgressRule(&requestsAli)
+		res, err := srcAc.Client.ModifySecurityGroupEgressRule(&requestsAli)
 		CheckErr(err)
 		fmt.Println(res)
 	}
@@ -109,6 +110,39 @@ func (srcAc *AccessAliYun) ListEcs() map[string]ecs.InstancesInDescribeInstances
 	}
 	return result
 }
+func GetHosts(name string, ip string) error {
+	contentHosts := ReadFile("/etc/hosts")
+	lineLists := strings.Split(string(contentHosts), "\n")
+	hostMap := make(map[string]string)
+	for _, i := range lineLists {
+		if strings.Index(i, "#") == 0 {
+			continue
+		} else {
+			if i == "\n" || i == " \n" || i == " " {
+				continue
+			} else {
+				r, _ := regexp.Compile(`(?P<ip>[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+(?P<host>\S+)`)
+				if result := r.FindStringSubmatch(i); result != nil {
+					//pp.Print(result)
+
+					if _, ok := hostMap[result[2]]; !ok {
+						hostMap[result[2]] = result[1]
+					}
+				}
+				//fmt.Println(i)
+			}
+
+		}
+	}
+	addHostFormat := "%s %s\n"
+	addHostStr := ""
+	if _, ok := hostMap[name]; !ok {
+		addHostStr = addHostStr + fmt.Sprintf(addHostFormat, ip, name)
+		//fmt.Println(addHostStr)
+	}
+	WriteFile("/etc/hosts", string(contentHosts)+addHostStr)
+	return nil
+}
 func (srcAc *AccessAliYun) LstM(result map[string]ecs.InstancesInDescribeInstances, keyMap map[string]string) {
 	for _, v := range result {
 		if len(v.Instance) > 0 {
@@ -124,6 +158,7 @@ func (srcAc *AccessAliYun) LstM(result map[string]ecs.InstancesInDescribeInstanc
 							i.InstanceName,
 							i.SecurityGroupIds.SecurityGroupId,
 							keyMap[i.KeyPairName])
+						GetHosts(i.InstanceName, i.VpcAttributes.PrivateIpAddress.IpAddress[0])
 					} else {
 						fmt.Println(
 							i.Tags.Tag,
