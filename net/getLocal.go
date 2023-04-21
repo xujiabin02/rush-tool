@@ -1,4 +1,4 @@
-package rushtool
+package net
 
 import (
 	"fmt"
